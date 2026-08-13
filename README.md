@@ -162,6 +162,12 @@ Perforation pads are designated `MB` and tooling holes `MH`, so each group is ea
 - Title text clears the left tooling hole only; a very long title could reach the right one.
 - Vertical dimension captions sit horizontally beside the line.
 
+## License
+
+MIT — see [LICENSE](LICENSE). Use it, change it, ship it in commercial work; just keep the
+copyright notice. No warranty, which matters here: check the fab caveats above before you send
+a panel out.
+
 ## Developer notes
 
 `NOTES.md` documents the Altium DelphiScript API findings behind this script — which
