@@ -1,0 +1,15 @@
+# Altium generated / local
+History/
+__Previews/
+Project Logs*/
+*.PrjScrStructure
+*.~*
+*.bak
+
+# Panels produced by the script (outputs, not sources)
+*.PcbDoc
+*.PrjPcb
+
+# OS
+Thumbs.db
+desktop.ini
