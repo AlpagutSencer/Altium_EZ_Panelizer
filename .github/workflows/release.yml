@@ -1,0 +1,78 @@
+# Packages the files a user actually needs and attaches them to the release.
+#
+# GitHub already attaches a source archive to every release, but that unpacks
+# to a tag-named folder and carries the developer notes and test images with
+# it. This produces a zip holding just the script, the project file, the readme
+# and the licence - drop it in the Altium scripts folder and run it.
+#
+# Fires on any v* tag. The dispatch input is for tags that were pushed before
+# this workflow existed, or for rebuilding an asset without moving the tag.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build from, e.g. v2.1'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          if [ -n "$INPUT_TAG" ]; then
+            echo "name=$INPUT_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.name }}
+
+      - name: Build the zip
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          DIR="Altium_EZ_Panelizer_${TAG}"
+          mkdir -p "dist/${DIR}"
+          cp Altium_Ez_Panelizer.pas \
+             Altium_Ez_Panelizer.PrjScr \
+             README.md \
+             LICENSE \
+             "dist/${DIR}/"
+          cd dist && zip -r "${DIR}.zip" "${DIR}"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          set -euo pipefail
+          ZIP="dist/Altium_EZ_Panelizer_${TAG}.zip"
+
+          # A release may already exist - made by hand, or by an earlier run of
+          # this workflow. Replacing the asset is the sane outcome either way;
+          # creating would just fail and leave the release without its download.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" \
+              --title "$TAG" \
+              --verify-tag \
+              --notes-from-tag
+          fi
