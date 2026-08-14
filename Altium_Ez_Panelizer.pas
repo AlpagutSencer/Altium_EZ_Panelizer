@@ -1,5 +1,5 @@
 ﻿{..............................................................................}
-{  Altium_Ez_Panelizer.pas                                    v2.0            }
+{  Altium_Ez_Panelizer.pas                                    v2.1            }
 {                                                                              }
 {  Builds a depanelisable PCB panel from a source .PcbDoc, by either method:   }
 {                                                                              }
