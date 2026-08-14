@@ -153,6 +153,31 @@ buttons a `ModalResult` rather than binding `OnClick`, so no event handler is ne
 Label positions are font- and DPI-dependent; hardcoded pixel columns that look right at 96 dpi
 will have edit boxes sitting on top of labels elsewhere. Leave generous clearance.
 
+## Event handlers do not work
+
+Greying out the mouse-bite fields when V-cut is picked needs a handler on the method combo, so
+this was tried:
+
+```pascal
+Procedure MethodChanged(Sender : TObject);
+...
+CoMethod.OnChange := MethodChanged;
+MethodChanged(Nil);          // <- "invalid procedure usage" at run time
+```
+
+The assignment parses and the unit still loads — it fails when the procedure is used, so this
+one surfaces as a run-time error rather than a vanished script. Treat handler procedures as
+unavailable.
+
+**The way round it is to not need one.** Ask anything the dialog must react to *before* the
+dialog is built, on a small form whose buttons carry a `ModalResult`, then assemble the dialog
+around the answer. That hides the irrelevant settings outright instead of greying them, and
+it costs one extra click.
+
+The knock-on: a control that is not created cannot be read. Whatever the build routine reads
+from those controls has to be defaulted first and read inside the branch, or it is an access
+violation rather than a quiet zero.
+
 ## Locale
 
 `StrToFloat` follows the Windows decimal separator, so on a comma-decimal locale a typed `0.2`

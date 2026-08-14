@@ -17,18 +17,21 @@
 {        Altium_Ez_Panelizer.PrjScr as a project.                              }
 {        Entry point: RunEzPanelizer                                           }
 {                                                                              }
-{  The dialog is built inline and its buttons use ModalResult, so no VCL type  }
-{  appears in any signature and no event handler has to be bound. DelphiScript }
-{  drops a whole unit from the Run Script list, with no error shown, if either }
-{  is got wrong - so both are avoided deliberately.                            }
+{  The dialogs are built inline and every button carries a ModalResult, so the }
+{  script has no event handlers at all. That is deliberate - DelphiScript will }
+{  not work with handler procedures the way Delphi does (see AskMethod), and a }
+{  wrong signature drops the whole unit from the Run Script list with no error }
+{  shown. Anything that has to react to a choice is asked before it is built.  }
 {                                                                              }
 {  METHOD NOTES                                                                }
 {    V-cut: a straight blade cut, so it must run clear across the panel. With  }
 {    a gap, each interior boundary is scored twice - once per board edge.      }
 {                                                                              }
 {    Mouse bites: the router traces each board's ACTUAL outline, so notches    }
-{    and cutouts are followed. The path runs on the outline itself and the     }
-{    fab applies cutter compensation. A gap of at least one bit width is       }
+{    and cutouts are followed. The path is the cutter CENTRELINE, half a bit   }
+{    outside the outline, and the layer is typed Route Tool Path. Perforations }
+{    go on the board edge, and optionally on the far wall of the kerf too, so  }
+{    the tab breaks flush at both ends. A gap of at least one bit width is     }
 {    required, including between the array and the rails.                      }
 {..............................................................................}
 
@@ -49,11 +52,16 @@ Var
     EdToolInset                      : TEdit;
     CbSideRails, CbNameLayer         : TCheckBox;
     CbTooling, CbFiducials, CbTitle  : TCheckBox;
-    CbDims                           : TCheckBox;
-    CoVLayer, CoMethod               : TComboBox;
+    CbDims, CbBothSides              : TCheckBox;
+    CoVLayer                         : TComboBox;
     EdTabW, EdTabs                   : TEdit;
     EdHoleDia, EdHoleCount, EdBitDia : TEdit;
-    EdHolePitch                      : TEdit;
+    EdHolePitch, EdHoleOff           : TEdit;
+
+    // Chosen before the settings dialog is built, because the dialog is built
+    // around it: the mouse-bite controls are only created for mouse bites, so
+    // nothing has to be greyed out at run time.
+    GMouseBites : Boolean;
 
     GSrcPath         : String;
     GBoardW, GBoardH : TCoord;
@@ -344,6 +352,13 @@ End;
 {  board. HX1..HY2 is the matching board edge, where the perforations go, so   }
 {  the tab breaks flush with the board rather than half a bit proud of it.     }
 {                                                                              }
+{  HoleOff pushes that row off the board edge, into the cut, for boards with   }
+{  copper close to the edge. It trades flushness for clearance: what is left   }
+{  between the edge and the row stays on the board as a stub.                  }
+{                                                                              }
+{  BothSides repeats the row on the far wall of the kerf, inset by the same    }
+{  HoleOff, so the tab lets go of the panel webbing as cleanly as of the board.}
+{                                                                              }
 {  Tabs are placed at the same fractional positions along both, so path and    }
 {  perforations line up even though the offset corner makes them differ        }
 {  slightly in length.                                                         }
@@ -355,7 +370,8 @@ Procedure AddRoutSegment(Board : IPCB_Board; CutLayer : TLayer;
                          X1, Y1, X2, Y2 : TCoord;
                          HX1, HY1, HX2, HY2 : TCoord;
                          Tabs, HoleCount : Integer;
-                         TabW, BitW, HoleDia, HolePitch : TCoord;
+                         TabW, BitW, HoleDia, HolePitch, HoleOff : TCoord;
+                         BothSides : Boolean;
                          Var nHoles, nSegs : Integer);
 Var
     k, h, nH          : Integer;
@@ -364,6 +380,8 @@ Var
     dx, dy, dot       : Double;
     ux, uy            : Double;
     ovx, ovy          : Double;
+    PerpLen, nx, ny   : Double;
+    o1, o2            : Double;
     sStart, sEnd      : Double;
     c, s, e, p        : Double;
     ax, ay            : TCoord;
@@ -434,6 +452,25 @@ Begin
     // Count and pitch describe the drill pattern; the tab width is separate and
     // says how much material is left un-routed. The row is centred in the tab,
     // so it may be narrower, leaving solid material at each end.
+    //
+    // The second row sits on the FAR WALL OF THE KERF, one full bit width off
+    // the board edge: the centreline is half a bit out and the cut is a bit
+    // wide. ovx/ovy is that half-bit perpendicular, so twice it lands on the
+    // far wall. Without it the tab tears off the panel webbing wherever it
+    // happens to give, leaving a nub on the rail or on the neighbour.
+    //
+    // Both rows are then walked toward each other by HoleOff. The perpendicular
+    // is measured from ovx/ovy rather than assumed to be half of BitW, so this
+    // stays right if the path is ever offset by something else.
+    PerpLen := Sqrt(ovx * ovx + ovy * ovy);
+    If PerpLen <= 0 Then Exit;
+
+    nx := ovx / PerpLen;
+    ny := ovy / PerpLen;
+
+    o1 := HoleOff * 1.0;                 // near row, off the board edge
+    o2 := 2 * PerpLen - o1;              // far row, same inset from the far wall
+
     nH := HoleCount;
     If nH < 2 Then nH := 2;
     HalfSpan := (nH - 1) * (HolePitch * 1.0) / 2;
@@ -444,8 +481,17 @@ Begin
         For h := 0 To nH - 1 Do
         Begin
             p := c - HalfSpan + (HolePitch * 1.0) * h;
-            AddBiteHole(Board, HX1 + Round(ux * p), HY1 + Round(uy * p), HoleDia);
+
+            AddBiteHole(Board, HX1 + Round(ux * p + nx * o1),
+                               HY1 + Round(uy * p + ny * o1), HoleDia);
             Inc(nHoles);
+
+            If BothSides Then
+            Begin
+                AddBiteHole(Board, HX1 + Round(ux * p + nx * o2),
+                                   HY1 + Round(uy * p + ny * o2), HoleDia);
+                Inc(nHoles);
+            End;
         End;
     End;
 End;
@@ -657,8 +703,9 @@ Var
     Inset, FidCu, FidMask : TCoord;
     DoLine                : Boolean;
     Seg                   : TPolySegment;
-    MouseBites            : Boolean;
+    MouseBites, BothSides : Boolean;
     TabW, HoleDia, HolePitch : TCoord;
+    HoleOff               : TCoord;
     HoleCount             : Integer;
     BitW                  : TCoord;
     ARect                 : TCoordRect;
@@ -667,6 +714,7 @@ Var
     c, r, k2              : Integer;
     Tabs, nHoles          : Integer;
     ToolInset, TextX      : TCoord;
+    ToolMin, ToolMax      : TCoord;
     LGap, RGap, BGap, TGap   : TCoord;
     Msg, Warn             : String;
 Begin
@@ -684,25 +732,42 @@ Begin
     Rail      := MM(ParseNum(EdRail.Text, 5));
     VW        := MM(ParseNum(EdVW.Text, 0.2));
     ToolDia   := MM(ParseNum(EdToolDia.Text, 3.0));
-    ToolInset := MM(ParseNum(EdToolInset.Text, 5.0));
+    ToolInset := MM(ParseNum(EdToolInset.Text, 2.5));
     SideRails := CbSideRails.Checked;
 
-    // Keep the hole fully inside the panel even if a small inset is typed.
-    If ToolInset < ToolDia Then ToolInset := ToolDia;
+    // One inset, measured from BOTH edges a hole sits against - a corner hole
+    // is as far down from the top as it is in from the side. It is used exactly
+    // as typed; what it has to fit inside is checked below, once the rail width
+    // has been validated.
+    ToolMin := ToolDia Div 2 + MM(0.5);
+    ToolMax := Rail - ToolDia Div 2 - MM(0.5);
 
-    MouseBites := (CoMethod.ItemIndex = 1);
-    TabW       := MM(ParseNum(EdTabW.Text, 5.0));
-    Tabs       := ParseInt(EdTabs.Text, 2);
-    HoleDia    := MM(ParseNum(EdHoleDia.Text, 0.5));
-    HoleCount  := ParseInt(EdHoleCount.Text, 5);
-    HolePitch  := MM(ParseNum(EdHolePitch.Text, 1.0));
-    BitW       := MM(ParseNum(EdBitDia.Text, 2.0));
-    If Tabs < 1 Then Tabs := 1;
-    If HoleCount < 2 Then HoleCount := 2;
-    If BitW <= 0 Then BitW := MM(2.0);
+    MouseBites := GMouseBites;
+
+    // The mouse-bite controls are only created when that method was chosen, so
+    // they are read inside the branch. Reading one that was never created is an
+    // access violation, not a nil that quietly comes back as zero.
+    TabW      := MM(5.0);   Tabs      := 2;
+    HoleDia   := MM(0.5);   HoleCount := 5;
+    HolePitch := MM(1.0);   HoleOff   := 0;
+    BitW      := MM(2.0);   BothSides := False;
 
     If MouseBites Then
     Begin
+        TabW       := MM(ParseNum(EdTabW.Text, 5.0));
+        Tabs       := ParseInt(EdTabs.Text, 2);
+        HoleDia    := MM(ParseNum(EdHoleDia.Text, 0.5));
+        HoleCount  := ParseInt(EdHoleCount.Text, 5);
+        HolePitch  := MM(ParseNum(EdHolePitch.Text, 1.0));
+        HoleOff    := MM(ParseNum(EdHoleOff.Text, 0));
+        BitW       := MM(ParseNum(EdBitDia.Text, 2.0));
+        BothSides  := CbBothSides.Checked;
+
+        If HoleOff < 0 Then HoleOff := 0;
+        If Tabs < 1 Then Tabs := 1;
+        If HoleCount < 2 Then HoleCount := 2;
+        If BitW <= 0 Then BitW := MM(2.0);
+
         // Each board's cutter path sits half a bit outside its outline, so the
         // kerf occupies a full bit width off each board edge. Two neighbours
         // therefore need 2 x bit between them to leave any webbing; below that
@@ -730,6 +795,55 @@ Begin
                         'the holes merge into a slot instead of a perforation.');
             Exit;
         End;
+
+        // The row is pushed off the board edge toward the cut, so past the
+        // centreline it would sit in the far half of the kerf - which is what
+        // the far-side row is for, not what this setting means.
+        If HoleOff >= BitW Div 2 Then
+        Begin
+            ShowMessage('Hole offset (' + MMStr(HoleOff) + ' mm) has to stay ' +
+                        'under half the bit (' + MMStr(BitW Div 2) + ' mm).' +
+                        #13#10 + #13#10 +
+                        'The row is pushed off the board edge into the cut, and ' +
+                        'half a bit is where the cutter centreline runs; past ' +
+                        'that it would be drilled in the far half of the channel.');
+            Exit;
+        End;
+
+        // Both rows walk toward each other by the offset, so what matters is
+        // what is left between them, not the bit alone.
+        If BothSides And (HoleDia >= BitW - 2 * HoleOff) Then
+        Begin
+            ShowMessage('The two rows end up ' + MMStr(BitW - 2 * HoleOff) +
+                        ' mm apart - the ' + MMStr(BitW) + ' mm bit less twice ' +
+                        'the ' + MMStr(HoleOff) + ' mm offset - so a ' +
+                        MMStr(HoleDia) + ' mm hole would run into its opposite ' +
+                        'number and cut the tab through.' + #13#10 + #13#10 +
+                        'Use a larger bit, a smaller hole or offset, or ' +
+                        'perforate one side only.');
+            Exit;
+        End;
+
+        // Between two boards, each one drills its own far row. Those rows only
+        // stay distinct while there is webbing between the kerfs, which needs
+        // more than 2 x bit of gap. At exactly 2 x bit both land on the same
+        // line and the pads are drilled twice; below it they interleave inside
+        // a shared tab. Neither is wrong at the fab, but it is not what the
+        // setting looks like it does, so say so rather than quietly doubling up.
+        If BothSides And (Cols + Rows > 2) And
+           ((GapX <= 2 * BitW) Or (GapY <= 2 * BitW)) Then
+            If Not ConfirmNoYes('Perforating both sides drills a row on the far ' +
+                                'wall of the cut, one bit width (' + MMStr(BitW) +
+                                ' mm) off the board edge.' + #13#10 + #13#10 +
+                                'Between two boards that row only stands on its ' +
+                                'own where webbing is left, which needs a gap ' +
+                                'wider than ' + MMStr(2 * BitW) + ' mm. At your ' +
+                                'gap the two boards'' far rows fall on the same ' +
+                                'line or cross inside a shared tab, so those ' +
+                                'holes get drilled twice.' + #13#10 + #13#10 +
+                                'Widen the gap past ' + MMStr(2 * BitW) +
+                                ' mm, or perforate the board edge only.' +
+                                #13#10 + #13#10 + 'Continue anyway?') Then Exit;
 
         // The drill row is centred in the tab, so it has to fit inside it.
         If (HoleCount - 1) * HolePitch > TabW Then
@@ -769,6 +883,32 @@ Begin
         ShowMessage('Tooling hole diameter (' + MMStr(ToolDia) +
                     ' mm) must be smaller than the rail width (' +
                     MMStr(Rail) + ' mm).');
+        Exit;
+    End;
+
+    // The inset is honoured as typed rather than quietly pulled back to what
+    // fits: a panel that came back with its holes somewhere other than where
+    // they were asked for is worse than being told the number is impossible.
+    // Both bounds name the value that would work, so the message is actionable.
+    If CbTooling.Checked And (ToolInset < ToolMin) Then
+    Begin
+        ShowMessage('Tooling hole inset (' + MMStr(ToolInset) + ' mm) leaves under ' +
+                    '0.5 mm of material between the hole and the panel edge.' +
+                    #13#10 + #13#10 +
+                    'With a ' + MMStr(ToolDia) + ' mm hole the smallest inset that ' +
+                    'holds is ' + MMStr(ToolMin) + ' mm.');
+        Exit;
+    End;
+
+    If CbTooling.Checked And (ToolInset > ToolMax) Then
+    Begin
+        ShowMessage('Tooling hole inset (' + MMStr(ToolInset) + ' mm) does not fit ' +
+                    'across a ' + MMStr(Rail) + ' mm rail. The hole is inset the ' +
+                    'same distance from both edges it faces, so this one would ' +
+                    'hang off the inside of the rail and into the boards.' +
+                    #13#10 + #13#10 +
+                    'This rail takes up to ' + MMStr(ToolMax) + ' mm. Widen the ' +
+                    'rail if you want the holes further in.');
         Exit;
     End;
 
@@ -1058,7 +1198,8 @@ Begin
                                    bx0 + GOutX[i],   by0 + GOutY[i],
                                    bx0 + GOutX[k2],  by0 + GOutY[k2],
                                    Tabs, HoleCount, TabW, BitW, HoleDia,
-                                   HolePitch, nHoles, nLines);
+                                   HolePitch, HoleOff, BothSides,
+                                   nHoles, nLines);
                 End;
             End;
         End;
@@ -1071,11 +1212,16 @@ Begin
         // in a decorative extra must not throw the whole build away.
         If CbTooling.Checked Then
         Try
-            Inset := ToolInset;   // hole CENTRE distance from the panel side
-            AddToolingHole(Panel, BX + Inset,          BY + Rail Div 2,          ToolDia);
-            AddToolingHole(Panel, BX + PanelW - Inset, BY + Rail Div 2,          ToolDia);
-            AddToolingHole(Panel, BX + Inset,          BY + PanelH - Rail Div 2, ToolDia);
-            AddToolingHole(Panel, BX + PanelW - Inset, BY + PanelH - Rail Div 2, ToolDia);
+            // Same inset from both edges, so a corner hole sits on the 45 line
+            // out of its corner - as far down from the top as it is in from the
+            // side. All four corners are then the same distance from the panel
+            // outline, whichever way the panel is turned.
+            Inset := ToolInset;
+
+            AddToolingHole(Panel, BX + Inset,          BY + Inset,          ToolDia);
+            AddToolingHole(Panel, BX + PanelW - Inset, BY + Inset,          ToolDia);
+            AddToolingHole(Panel, BX + Inset,          BY + PanelH - Inset, ToolDia);
+            AddToolingHole(Panel, BX + PanelW - Inset, BY + PanelH - Inset, ToolDia);
         Except
             Warn := Warn + #13#10 + '  - tooling holes failed';
         End;
@@ -1190,10 +1336,15 @@ Begin
     End;
 
     If MouseBites Then
+    Begin
         Msg := 'Bites   : ' + IntToStr(nLines) + ' rout segments, ' +
                IntToStr(nHoles) + ' holes, ' + IntToStr(Tabs) +
                ' tabs/edge of ' + MMStr(TabW) + ' mm, ' +
-               MMStr(BitW) + ' mm bit'
+               MMStr(BitW) + ' mm bit';
+        If BothSides Then Msg := Msg + ', perforated both sides';
+        If HoleOff > 0 Then
+            Msg := Msg + ', holes ' + MMStr(HoleOff) + ' mm off the edge';
+    End
     Else
         Msg := 'V-cuts  : ' + IntToStr(nLines) + ' score lines';
 
@@ -1216,6 +1367,88 @@ End;
 {  Entry point - this is the name that appears in the Run Script list.         }
 {  Every control is built inline; no helper takes or returns a VCL type.       }
 {..............................................................................}
+{..............................................................................}
+{  Ask for the separation method first, so the settings dialog can be built    }
+{  around the answer and simply leave out what the other method uses.          }
+{                                                                              }
+{  This is why the method is not a combo on the settings dialog itself.        }
+{  Reacting to a combo means an OnChange handler, and that was tried: a        }
+{  Procedure MethodChanged(Sender : TObject) greying out the fields V-cut does }
+{  not use. Calling it raised "invalid procedure usage" at run time, so a      }
+{  handler procedure is not something this interpreter will work with.         }
+{                                                                              }
+{  Buttons carrying a ModalResult need no handler, so the choice is made       }
+{  before anything is built and the dialog is assembled around the answer.     }
+{                                                                              }
+{  Returns 0 for V-cut, 1 for mouse bites, -1 if cancelled.                    }
+{..............................................................................}
+Function AskMethod : Integer;
+Var
+    F : TForm;
+    L : TLabel;
+    B : TButton;
+    R : Integer;
+Begin
+    Result := -1;
+
+    F := TForm.Create(Nil);
+    Try
+        F.BorderStyle  := bsDialog;
+        F.Caption      := 'Altium EZ Panelizer';
+        F.Position     := poScreenCenter;
+        F.ClientWidth  := 460;
+        F.ClientHeight := 188;
+
+        L := TLabel.Create(F);
+        L.Parent := F;  L.Left := 16;  L.Top := 16;
+        L.Caption := 'How should the boards come apart?';
+
+        L := TLabel.Create(F);
+        L.Parent := F;  L.Left := 16;  L.Top := 48;
+        L.Caption := 'V-cut - scored along butted board edges. Needs a rectangular';
+
+        L := TLabel.Create(F);
+        L.Parent := F;  L.Left := 16;  L.Top := 66;
+        L.Caption := 'board: a straight blade cannot follow a notch.';
+
+        L := TLabel.Create(F);
+        L.Parent := F;  L.Left := 16;  L.Top := 92;
+        L.Caption := 'Mouse bites - routed around the real outline, held by tabs.';
+
+        L := TLabel.Create(F);
+        L.Parent := F;  L.Left := 16;  L.Top := 110;
+        L.Caption := 'Follows any shape, but needs a gap of at least one bit width.';
+
+        B := TButton.Create(F);
+        B.Parent      := F;
+        B.Left        := 16;   B.Top    := 140;
+        B.Width       := 110;  B.Height := 30;
+        B.Caption     := 'V-cut';
+        B.ModalResult := mrYes;
+
+        B := TButton.Create(F);
+        B.Parent      := F;
+        B.Left        := 136;  B.Top    := 140;
+        B.Width       := 130;  B.Height := 30;
+        B.Caption     := 'Mouse bites';
+        B.ModalResult := mrNo;
+
+        B := TButton.Create(F);
+        B.Parent      := F;
+        B.Left        := 344;  B.Top    := 140;
+        B.Width       := 100;  B.Height := 30;
+        B.Caption     := 'Cancel';
+        B.ModalResult := mrCancel;
+
+        R := F.ShowModal;
+        If R = mrYes Then Result := 0
+        Else If R = mrNo Then Result := 1;
+    Finally
+        F.Free;
+    End;
+End;
+
+
 Procedure RunEzPanelizer;
 Var
     Dlg : TOpenDialog;
@@ -1224,8 +1457,10 @@ Var
     L   : TLabel;
     B   : TButton;
     i   : Integer;
+    M   : Integer;
+    Y   : Integer;
 Begin
-    // ---- pick the source board first, so the dialog needs no event handlers ----
+    // ---- pick the source board first, so the dialog has nothing to browse for ----
     Dlg := TOpenDialog.Create(Nil);
     Try
         Dlg.Filter := 'PCB documents (*.PcbDoc)|*.PcbDoc|All files (*.*)|*.*';
@@ -1238,17 +1473,35 @@ Begin
 
     If Not ReadBoardSize(GSrcPath, GBoardW, GBoardH) Then Exit;
 
-    // ---- settings dialog ----
+    // ---- method, then the settings that method actually uses ----
+    M := AskMethod;
+    If M < 0 Then Exit;
+    GMouseBites := (M = 1);
+
     Frm := TForm.Create(Nil);
     Try
         Frm.BorderStyle  := bsDialog;
-        Frm.Caption      := 'Altium EZ Panelizer';
         Frm.Position     := poScreenCenter;
+
+        If GMouseBites Then
+            Frm.Caption := 'Altium EZ Panelizer - mouse bites'
+        Else
+            Frm.Caption := 'Altium EZ Panelizer - V-cut';
+
         // Generous spacing on purpose: label widths vary with system font and
         // DPI, so every edit starts well clear of the widest label in its
         // column. Tighter positions collided at anything above 96 dpi.
-        Frm.ClientWidth  := 540;
-        Frm.ClientHeight := 648;
+        //
+        // One grid throughout, so the columns line up from group to group:
+        //   label col 1 x=12    edit col 1 x=150
+        //   label col 2 x=250   edit col 2 x=390 (width 60, ends at 450)
+        // Nothing reaches past 460, which leaves every field a margin wide
+        // enough to absorb the label growth at 125-150% scaling.
+        //
+        // Y walks down the form as groups are added, because the mouse-bite
+        // group is only there for mouse bites - hardcoded tops would leave a
+        // hole in the V-cut dialog.
+        Frm.ClientWidth := 540;
 
         L := TLabel.Create(Frm);
         L.Parent  := Frm;
@@ -1257,137 +1510,165 @@ Begin
         L.Caption := 'Source: ' + ExtractFileName(GSrcPath) + '   (' +
                      MMStr(GBoardW) + ' x ' + MMStr(GBoardH) + ' mm)';
 
+        Y := 32;
+
         // ================= array =================
         G := TGroupBox.Create(Frm);
         G.Parent  := Frm;
         G.Left    := 12;
-        G.Top     := 32;
+        G.Top     := Y;
         G.Width   := 516;
         G.Height  := 104;
         G.Caption := ' Array ';
+        Y := Y + 112;
 
         L := TLabel.Create(G);
         L.Parent := G;  L.Left := 12;  L.Top := 26;  L.Caption := 'Columns (X):';
 
         EdCols := TEdit.Create(G);
-        EdCols.Parent := G;  EdCols.Left := 110;  EdCols.Top := 22;
+        EdCols.Parent := G;  EdCols.Left := 150;  EdCols.Top := 22;
         EdCols.Width  := 60; EdCols.Text := '2';
 
         L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 200;  L.Top := 26;  L.Caption := 'Rows (Y):';
+        L.Parent := G;  L.Left := 250;  L.Top := 26;  L.Caption := 'Rows (Y):';
 
         EdRows := TEdit.Create(G);
-        EdRows.Parent := G;  EdRows.Left := 280;  EdRows.Top := 22;
+        EdRows.Parent := G;  EdRows.Left := 390;  EdRows.Top := 22;
         EdRows.Width  := 60; EdRows.Text := '3';
 
         L := TLabel.Create(G);
         L.Parent := G;  L.Left := 12;  L.Top := 53;  L.Caption := 'Gap X (mm):';
 
         EdGapX := TEdit.Create(G);
-        EdGapX.Parent := G;  EdGapX.Left := 110;  EdGapX.Top := 49;
+        EdGapX.Parent := G;  EdGapX.Left := 150;  EdGapX.Top := 49;
         EdGapX.Width  := 60; EdGapX.Text := '0';
 
         L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 200;  L.Top := 53;  L.Caption := 'Gap Y (mm):';
+        L.Parent := G;  L.Left := 250;  L.Top := 53;  L.Caption := 'Gap Y (mm):';
 
         EdGapY := TEdit.Create(G);
-        EdGapY.Parent := G;  EdGapY.Left := 280;  EdGapY.Top := 49;
+        EdGapY.Parent := G;  EdGapY.Left := 390;  EdGapY.Top := 49;
         EdGapY.Width  := 60; EdGapY.Text := '0';
 
         // own row: this note was running past the group edge and getting cut
         L := TLabel.Create(G);
         L.Parent := G;  L.Left := 12;  L.Top := 80;
-        L.Caption := '0 = butted, required by V-cut.   Mouse bites need a gap of at least one bit width.';
+        If GMouseBites Then
+            L.Caption := 'Mouse bites need a gap of at least one bit width, on both axes.'
+        Else
+            L.Caption := '0 = butted, which is what V-cut wants. A gap is scored twice.';
 
-        // ================= panel / v-cut =================
-        G := TGroupBox.Create(Frm);
-        G.Parent  := Frm;
-        G.Left    := 12;
-        G.Top     := 144;
-        G.Width   := 516;
-        G.Height  := 132;
-        G.Caption := ' Separation method ';
+        // ================= mouse bites only =================
+        // Not created at all for V-cut, which has no settings of its own - the
+        // score follows the board edges and uses the gap and line width below.
+        If GMouseBites Then
+        Begin
+            G := TGroupBox.Create(Frm);
+            G.Parent  := Frm;
+            G.Left    := 12;
+            G.Top     := Y;
+            G.Width   := 516;
+            G.Height  := 184;
+            G.Caption := ' Mouse bites ';
+            Y := Y + 192;
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 12;  L.Top := 26;  L.Caption := 'Method:';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 12;  L.Top := 26;
+            L.Caption := 'Tab width (mm):';
 
-        CoMethod := TComboBox.Create(G);
-        CoMethod.Parent := G;
-        CoMethod.Left   := 110;
-        CoMethod.Top    := 22;
-        CoMethod.Width  := 290;
-        CoMethod.Style  := csDropDownList;
-        CoMethod.Items.Add('V-cut  (scored, boards butted)');
-        CoMethod.Items.Add('Mouse bites  (routed channel + tabs)');
-        CoMethod.ItemIndex := 0;
+            EdTabW := TEdit.Create(G);
+            EdTabW.Parent := G;  EdTabW.Left := 150;  EdTabW.Top := 22;
+            EdTabW.Width  := 60; EdTabW.Text := '5.0';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 12;  L.Top := 55;  L.Caption := 'Tab width (mm):';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 250;  L.Top := 26;
+            L.Caption := 'Tabs per edge:';
 
-        EdTabW := TEdit.Create(G);
-        EdTabW.Parent := G;  EdTabW.Left := 110;  EdTabW.Top := 51;
-        EdTabW.Width  := 60; EdTabW.Text := '5.0';
+            EdTabs := TEdit.Create(G);
+            EdTabs.Parent := G;  EdTabs.Left := 390;  EdTabs.Top := 22;
+            EdTabs.Width  := 60; EdTabs.Text := '2';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 200;  L.Top := 55;  L.Caption := 'Tabs per edge:';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 12;  L.Top := 53;
+            L.Caption := 'Hole dia (mm):';
 
-        EdTabs := TEdit.Create(G);
-        EdTabs.Parent := G;  EdTabs.Left := 300;  EdTabs.Top := 51;
-        EdTabs.Width  := 60; EdTabs.Text := '2';
+            EdHoleDia := TEdit.Create(G);
+            EdHoleDia.Parent := G;  EdHoleDia.Left := 150;  EdHoleDia.Top := 49;
+            EdHoleDia.Width  := 60; EdHoleDia.Text := '0.5';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 12;  L.Top := 82;  L.Caption := 'Hole dia (mm):';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 250;  L.Top := 53;
+            L.Caption := 'Holes per tab:';
 
-        EdHoleDia := TEdit.Create(G);
-        EdHoleDia.Parent := G;  EdHoleDia.Left := 110;  EdHoleDia.Top := 78;
-        EdHoleDia.Width  := 60; EdHoleDia.Text := '0.5';
+            EdHoleCount := TEdit.Create(G);
+            EdHoleCount.Parent := G;  EdHoleCount.Left := 390;  EdHoleCount.Top := 49;
+            EdHoleCount.Width  := 60; EdHoleCount.Text := '5';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 200;  L.Top := 82;  L.Caption := 'Holes per tab:';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 12;  L.Top := 80;
+            L.Caption := 'Hole pitch (mm):';
 
-        EdHoleCount := TEdit.Create(G);
-        EdHoleCount.Parent := G;  EdHoleCount.Left := 300;  EdHoleCount.Top := 78;
-        EdHoleCount.Width  := 60; EdHoleCount.Text := '5';
+            EdHolePitch := TEdit.Create(G);
+            EdHolePitch.Parent := G;  EdHolePitch.Left := 150;  EdHolePitch.Top := 76;
+            EdHolePitch.Width  := 60; EdHolePitch.Text := '1.0';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 386;  L.Top := 82;  L.Caption := 'Bit (mm):';
+            // Was crammed into a third column against the group edge, where it
+            // got clipped - it is an ordinary setting and now sits on the grid.
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 250;  L.Top := 80;
+            L.Caption := 'Bit (mm):';
 
-        EdBitDia := TEdit.Create(G);
-        EdBitDia.Parent := G;  EdBitDia.Left := 444;  EdBitDia.Top := 78;
-        EdBitDia.Width  := 60; EdBitDia.Text := '2.0';
+            EdBitDia := TEdit.Create(G);
+            EdBitDia.Parent := G;  EdBitDia.Left := 390;  EdBitDia.Top := 76;
+            EdBitDia.Width  := 60; EdBitDia.Text := '2.0';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 12;  L.Top := 109;  L.Caption := 'Hole pitch (mm):';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 12;  L.Top := 107;
+            L.Caption := 'Hole offset (mm):';
 
-        EdHolePitch := TEdit.Create(G);
-        EdHolePitch.Parent := G;  EdHolePitch.Left := 110;  EdHolePitch.Top := 105;
-        EdHolePitch.Width  := 60; EdHolePitch.Text := '1.0';
+            EdHoleOff := TEdit.Create(G);
+            EdHoleOff.Parent := G;  EdHoleOff.Left := 150;  EdHoleOff.Top := 103;
+            EdHoleOff.Width  := 60; EdHoleOff.Text := '0';
 
-        L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 200;  L.Top := 109;
-        L.Caption := 'drill row is centred in the tab, and must fit inside it';
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 250;  L.Top := 107;
+            L.Caption := '0 = on the board edge';
+
+            CbBothSides := TCheckBox.Create(G);
+            CbBothSides.Parent  := G;
+            CbBothSides.Left    := 12;
+            CbBothSides.Top     := 134;
+            CbBothSides.Width   := 470;
+            CbBothSides.Caption := 'Perforate both sides of each tab (board edge and far side of the cut)';
+            CbBothSides.Checked := True;
+
+            L := TLabel.Create(G);
+            L.Parent := G;  L.Left := 12;  L.Top := 160;
+            L.Caption := 'The drill row is centred in the tab, and must fit inside it.';
+        End;
 
         // ================= panel / cut layer =================
         G := TGroupBox.Create(Frm);
         G.Parent  := Frm;
         G.Left    := 12;
-        G.Top     := 284;
+        G.Top     := Y;
         G.Width   := 516;
         G.Height  := 106;
         G.Caption := ' Panel and cut layer ';
+        Y := Y + 114;
 
         L := TLabel.Create(G);
         L.Parent := G;  L.Left := 12;  L.Top := 26;  L.Caption := 'Rail width (mm):';
 
         EdRail := TEdit.Create(G);
-        EdRail.Parent := G;  EdRail.Left := 110;  EdRail.Top := 22;
+        EdRail.Parent := G;  EdRail.Left := 150;  EdRail.Top := 22;
         EdRail.Width  := 60; EdRail.Text := '5';
 
         CbSideRails := TCheckBox.Create(G);
         CbSideRails.Parent  := G;
-        CbSideRails.Left    := 200;
+        CbSideRails.Left    := 250;
         CbSideRails.Top     := 24;
-        CbSideRails.Width   := 220;
+        CbSideRails.Width   := 210;
         CbSideRails.Caption := 'Left / right rails as well';
         CbSideRails.Checked := True;
 
@@ -1396,7 +1677,7 @@ Begin
 
         CoVLayer := TComboBox.Create(G);
         CoVLayer.Parent := G;
-        CoVLayer.Left   := 110;
+        CoVLayer.Left   := 150;
         CoVLayer.Top    := 51;
         CoVLayer.Width  := 150;
         CoVLayer.Style  := csDropDownList;
@@ -1405,88 +1686,92 @@ Begin
         CoVLayer.ItemIndex := 0;
 
         L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 290;  L.Top := 55;  L.Caption := 'Line width (mm):';
+        L.Parent := G;  L.Left := 12;  L.Top := 82;  L.Caption := 'Line width (mm):';
 
         EdVW := TEdit.Create(G);
-        EdVW.Parent := G;  EdVW.Left := 400;  EdVW.Top := 51;
+        EdVW.Parent := G;  EdVW.Left := 150;  EdVW.Top := 78;
         EdVW.Width  := 60; EdVW.Text := '0.2';
 
+        // Sat under the edits at x=110 before, lining up with nothing. On the
+        // second column now, and the caption is shortened so it cannot run past
+        // the group edge at a larger font - the names are in the readme.
         CbNameLayer := TCheckBox.Create(G);
         CbNameLayer.Parent  := G;
-        CbNameLayer.Left    := 110;
-        CbNameLayer.Top     := 78;
-        CbNameLayer.Width   := 390;
-        CbNameLayer.Caption := 'Rename that layer ("V-Cut" / "Routing")';
+        CbNameLayer.Left    := 250;
+        CbNameLayer.Top     := 80;
+        CbNameLayer.Width   := 210;
+        CbNameLayer.Caption := 'Rename it (V-Cut / Routing)';
         CbNameLayer.Checked := True;
 
         // ================= extras =================
         G := TGroupBox.Create(Frm);
         G.Parent  := Frm;
         G.Left    := 12;
-        G.Top     := 398;
+        G.Top     := Y;
         G.Width   := 516;
-        G.Height  := 184;
+        G.Height  := 190;
         G.Caption := ' Panel extras ';
+        Y := Y + 206;
 
         CbTooling := TCheckBox.Create(G);
         CbTooling.Parent  := G;
         CbTooling.Left    := 12;
         CbTooling.Top     := 22;
-        CbTooling.Width   := 210;
-        CbTooling.Caption := 'Tooling holes (4, in rails)';
+        CbTooling.Width   := 220;
+        CbTooling.Caption := 'Tooling holes (4, in the corners)';
         CbTooling.Checked := True;
 
         L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 240;  L.Top := 24;  L.Caption := 'Hole dia (mm):';
+        L.Parent := G;  L.Left := 250;  L.Top := 24;  L.Caption := 'Hole dia (mm):';
 
         EdToolDia := TEdit.Create(G);
-        EdToolDia.Parent := G;  EdToolDia.Left := 340;  EdToolDia.Top := 20;
+        EdToolDia.Parent := G;  EdToolDia.Left := 390;  EdToolDia.Top := 20;
         EdToolDia.Width  := 60; EdToolDia.Text := '3.0';
 
         L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 32;  L.Top := 50;
-        L.Caption := 'Edge inset from sides (mm), to hole centre:';
+        L.Parent := G;  L.Left := 32;  L.Top := 52;
+        L.Caption := 'Distance from both edges (mm), to hole centre:';
 
         EdToolInset := TEdit.Create(G);
-        EdToolInset.Parent := G;  EdToolInset.Left := 340;  EdToolInset.Top := 46;
-        EdToolInset.Width  := 60; EdToolInset.Text := '5.0';
+        EdToolInset.Parent := G;  EdToolInset.Left := 390;  EdToolInset.Top := 48;
+        EdToolInset.Width  := 60; EdToolInset.Text := '2.5';
 
         CbFiducials := TCheckBox.Create(G);
         CbFiducials.Parent  := G;
         CbFiducials.Left    := 12;
-        CbFiducials.Top     := 74;
-        CbFiducials.Width   := 400;
+        CbFiducials.Top     := 78;
+        CbFiducials.Width   := 440;
         CbFiducials.Caption := 'Fiducials (3, asymmetric, 1 mm / 2 mm mask)';
         CbFiducials.Checked := True;
 
         CbTitle := TCheckBox.Create(G);
         CbTitle.Parent  := G;
         CbTitle.Left    := 12;
-        CbTitle.Top     := 100;
-        CbTitle.Width   := 400;
+        CbTitle.Top     := 106;
+        CbTitle.Width   := 440;
         CbTitle.Caption := 'Panel title text in bottom rail';
         CbTitle.Checked := True;
 
         L := TLabel.Create(G);
-        L.Parent := G;  L.Left := 12;  L.Top := 129;  L.Caption := 'Text:';
+        L.Parent := G;  L.Left := 32;  L.Top := 136;  L.Caption := 'Text:';
 
         EdTitle := TEdit.Create(G);
-        EdTitle.Parent := G;  EdTitle.Left := 60;  EdTitle.Top := 125;
-        EdTitle.Width  := 444; EdTitle.Text := 'PANEL';
+        EdTitle.Parent := G;  EdTitle.Left := 80;  EdTitle.Top := 132;
+        EdTitle.Width  := 370; EdTitle.Text := 'PANEL';
 
         CbDims := TCheckBox.Create(G);
         CbDims.Parent  := G;
         CbDims.Left    := 12;
-        CbDims.Top     := 156;
-        CbDims.Width   := 490;
-        CbDims.Caption := 'Dimension annotations (own mechanical layer, not the cut layer)';
+        CbDims.Top     := 162;
+        CbDims.Width   := 460;
+        CbDims.Caption := 'Dimension annotations (own mechanical layer)';
         CbDims.Checked := True;
 
-        // ========== buttons: ModalResult only, no handlers to bind ==========
+        // ========== buttons: ModalResult, so they need no handler ==========
         B := TButton.Create(Frm);
         B.Parent      := Frm;
         B.Left        := 316;
-        B.Top         := 598;
+        B.Top         := Y;
         B.Width       := 100;
         B.Height      := 30;
         B.Caption     := 'Build Panel';
@@ -1495,11 +1780,13 @@ Begin
         B := TButton.Create(Frm);
         B.Parent      := Frm;
         B.Left        := 428;
-        B.Top         := 598;
+        B.Top         := Y;
         B.Width       := 100;
         B.Height      := 30;
         B.Caption     := 'Cancel';
         B.ModalResult := mrCancel;
+
+        Frm.ClientHeight := Y + 46;
 
         If Frm.ShowModal = mrOK Then DoBuildPanel;
     Finally

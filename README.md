@@ -30,7 +30,7 @@ gap between every board and around the rails, while V-cut butts them together.
 | Board array | One `IPCB_EmbeddedBoard`, `Cols x Rows`, **live-linked** to the source PCB |
 | Panel outline | Rectangular board shape sized to the array plus rails |
 | Separation | V-cut score lines, or routed paths with mouse-bite tabs |
-| Tooling holes | 4 NPTH in the rails, diameter and edge inset both adjustable |
+| Tooling holes | 4 NPTH in the corner rails, diameter and inset both adjustable |
 | Fiducials | 3 asymmetric, 1 mm copper on the top layer |
 | Title text | Panel name, array size, dimensions, date, plus a fab note for the method used |
 | Dimensions | Overall width/height and array pitch, on their own mechanical layer |
@@ -43,7 +43,8 @@ measured from that corner.
 
 1. Open `Altium_Ez_Panelizer.PrjScr` in Altium (File ▸ Open Project).
 2. Run Script ▸ `RunEzPanelizer`.
-3. Pick the source `.PcbDoc` → set options → **Build Panel**.
+3. Pick the source `.PcbDoc` → choose **V-cut** or **mouse bites** → set options →
+   **Build Panel**.
 
 To have it always available, add the project under
 **Preferences ▸ Scripting System ▸ Global Projects**.
@@ -64,18 +65,24 @@ The `ProcName` format is `<file>><procedure>`; the `>` separator is required.
 |---|---|---|
 | Columns / Rows | 2 x 3 | Array size |
 | Gap X / Gap Y | 0 | 0 = butted. Mouse bites require a gap |
-| Method | V-cut | V-cut, or mouse bites |
+| Method | — | Asked first, on its own dialog |
 | Tab width | 5.0 mm | Mouse bites only |
 | Tabs per edge | 2 | Per board edge, so 8 tabs hold each board |
 | Hole dia | 0.5 mm | Perforation drill size |
 | Holes per tab | 5 | Count in the drill row |
 | Hole pitch | 1.0 mm | Spacing between holes; row is centred in the tab |
+| Hole offset | 0 | Push the row off the board edge, into the cut |
+| Both sides | on | Second drill row on the far side of the cut |
 | Bit | 2.0 mm | Router bit diameter |
 | Rail width | 5 mm | Left/right rails optional |
 | Cut layer | Mechanical 1 | Renamed and typed automatically |
 | Line width | 0.2 mm | Score line width |
 | Tooling hole dia | 3.0 mm | |
-| Edge inset | 5.0 mm | Panel side to hole centre |
+| Tooling hole inset | 2.5 mm | Same distance from both edges, to hole centre |
+
+The method is chosen before the settings dialog is built, so the settings dialog only ever
+shows what that method uses — the whole Mouse bites group is absent under V-cut, which has no
+settings of its own beyond the gap and the line width.
 
 ## V-cut
 
@@ -101,6 +108,25 @@ intersecting the displaced edges, so convex corners extend and concave ones tuck
 
 Perforations stay on the **board edge**, not the offset path, so tabs break flush.
 
+**Hole offset** moves that row off the edge and into the cut, for boards carrying copper close
+to the outline — a 0.5 mm drill on the edge line has its own annular reach, and on a dense
+board that is too near the signals. It is a straight trade: whatever you offset stays on the
+board as a stub after the tab breaks, so keep it to what the clearance actually needs. The
+limit is half the bit, which is where the cutter centreline runs.
+
+The offset applies to both rows, each measured from its own side, so a two-sided tab stays
+symmetric.
+
+**Both sides** (default on) repeats that row on the far wall of the kerf — one full bit width
+off the board edge, since the centreline is half a bit out and the cut is a bit wide. A tab is
+held at both ends, so perforating only the board side means it snaps clean off the board and
+then tears off the webbing wherever it happens to give, leaving a nub on the rail or the
+neighbour. Two rows and both ends let go on a line.
+
+The two rows sit one bit diameter apart, less twice the hole offset, and the hole has to be
+smaller than what is left or the rows meet and cut the tab through; the script checks this. It
+also doubles the hole count.
+
 Two consequences worth knowing:
 
 - **A gap of at least one bit diameter is required** on both axes, so the cutter fits. Below
@@ -118,8 +144,18 @@ un-routed; count and pitch describe the drill pattern inside it. The row is cent
 and may be narrower, which usually is what you want — a little solid material at each end.
 `(count - 1) x pitch` has to fit within the tab width, and the script checks it.
 
-Object counts add up quickly — 6 boards x 4 edges x 2 tabs is 72 rout segments and 288 holes.
-Try 1 tab per edge first.
+Object counts add up quickly — 6 boards x 4 edges x 2 tabs is 72 rout segments and 288 holes,
+or 576 with both sides perforated. Try 1 tab per edge first.
+
+## Tooling holes
+
+Four holes, one per corner. A single inset governs both axes, so each sits on the 45° line out
+of its corner — the same distance down from the top as in from the side.
+
+That distance is yours to set and is used exactly as typed. What bounds it is the rail: the
+hole needs half its diameter plus 0.5 mm of material on each side, so a 3 mm hole in a 5 mm
+rail can sit between 2.0 and 3.0 mm from the edges. Ask for more and the build stops and names
+the limit rather than quietly moving the holes — widen the rail and the range opens up with it.
 
 ## Layers
 
