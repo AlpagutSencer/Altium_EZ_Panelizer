@@ -7,6 +7,11 @@ Developed against **Altium Designer 26.4.1** (Agile channel). DelphiScript, no S
 
 ![method](https://img.shields.io/badge/method-V--cut%20%7C%20mouse%20bites-blue)
 
+<p align="center">
+  <img src="docs/ez_panelizer.gif" width="800"
+       alt="One board is stepped into a 5 × 5 panel with rails, tooling holes, fiducials and the fab note, then separated by mouse bites (178.684 × 122.423 mm) or V-cut (148.684 × 92.423 mm)">
+</p>
+
 ## Examples
 
 **Mouse bites** — 5 × 5 array, 178.684 × 122.423 mm. The router path follows each board's real
